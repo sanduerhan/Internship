@@ -1,0 +1,411 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+import "./ERC20Token.sol";
+import "./openzeppelin-contracts/token/ERC20/ERC20.sol";
+import "./Payee.sol";
+
+contract QuadraticVoting
+{
+    uint256 private  maxTokens;
+    uint256 private immutable tokenPrice;
+    uint256 private totalBudget;
+    uint256 private tokens_contract;
+    address private  owner;
+    uint256 last_id = 0;
+    ERC20Token private tokenManager;
+    
+    bool private votingOpen;
+    
+    /*----------PARTICIPANTS----------*/
+    
+    struct  Participant
+    {
+        address id;
+        uint256 tokens;
+    }
+     
+     Participant [] participants;
+     
+     struct Proposal 
+     {
+         address creator;
+         uint256 id;
+         string title;
+         string description;    
+         uint256 approved;      // 0-pending, 1-approved
+         uint256 budget;
+         mapping(address => uint) tokensReceived; // address of the participant who voted for this proposal.
+         uint256 votes;
+         uint256 ntokens;
+         uint256 signaling;
+         Payee recipient;
+     }
+     
+     mapping(uint  => Proposal) proposals;
+     uint256 private nrProposals;
+    /*----------MODIFIERS----------*/
+    
+    modifier onlyOwner()    //Checks if the msg.sender is the ownner of the contract
+    {
+        require(msg.sender == owner, "El emisor no corresponde con la autoridad del contrato");
+        _;
+    }
+    
+    modifier validParticipant ()    //Checks if participant is  not registered on the system
+    {
+        uint i = 0;
+        
+        while (msg.sender != participants[i].id) i++;
+        
+        if(!(i < participants.length))
+            revert("El participante no se encuentra registrado en el sistema!");
+        
+        _;
+    }
+    /*----------CONSTRUCTOR----------*/
+    
+    constructor (uint256 tokenPrice_, uint256 maxTokens_)  payable
+    {
+        tokenPrice = tokenPrice_;
+        maxTokens = maxTokens_;
+        totalBudget = msg.value;
+        owner = msg.sender;
+        
+        tokenManager = new ERC20Token("DemocracyToken","Dt", 64);
+        
+        //Variables initialization
+        votingOpen = false;
+    }
+    
+    /*----------FUNCTIONS----------*/
+    
+    function openVoting() external onlyOwner
+    {
+        votingOpen = true;
+    }
+    
+    //add the new participant to the participant array with all the corresponding values
+    function addParticipant() external payable
+    {
+        Participant memory newParticipant;
+        
+        newParticipant.id = msg.sender;
+        require(msg.value>0, "Deberia comprar al menos un token");
+        require((msg.value % tokenPrice)==0, "El valor introducido no es valido");
+        require(msg.value/tokenPrice <= maxTokens, "Se excede el limite de tokens");
+        tokenManager.mint(msg.sender, msg.value/tokenPrice); //buying the number of tokens with ether
+        newParticipant.tokens = msg.value/tokenPrice;
+        participants.push(newParticipant);
+        maxTokens -= msg.value/tokenPrice;
+    }
+    //add the new proposal to the mapping using the id as the key and the struct as the value for the mapping
+    function addProposal(string memory title, string memory description, uint budget, Payee recipient ) validParticipant public returns(uint)
+    {
+        last_id++;
+        Proposal storage newProposal = proposals[last_id];
+        newProposal.title = title;
+        newProposal.description = description;
+        newProposal.budget = budget;
+        newProposal.signaling = 0;
+        if(budget == 0)
+        {
+            newProposal.signaling = 1;
+        }
+        
+        newProposal.recipient = recipient;
+        newProposal.id = last_id;
+        newProposal.approved = 0;
+        newProposal.creator = msg.sender;
+        nrProposals++;
+        return last_id;
+
+    }
+    
+    function cancelProposal(uint idProposal) public
+    {
+        require(msg.sender==proposals[idProposal].creator, "You are not the creator of the contract");
+        if(proposals[idProposal].approved == 1)
+            revert("The proposal is already approved");
+        for(uint i=0; i<participants.length; i++)
+        {
+            if(proposals[idProposal].tokensReceived[participants[i].id]>0) //check if the participant voted in this proposal
+            {
+                participants[i].tokens+=proposals[idProposal].tokensReceived[participants[i].id]; //if yes, it gives back his tokens
+                proposals[idProposal].tokensReceived[participants[i].id] = 0;
+                proposals[idProposal].ntokens = 0;
+            }
+        }
+        delete proposals[idProposal]; //deletes element from the mapping
+        nrProposals--;
+    }
+
+    
+    function buyTokens() validParticipant public payable
+    {
+        require(msg.value>0, "Deberia comprar al menos un token");
+        require((msg.value % tokenPrice)==0, "El valor introducido no es valido"); // the value added should divisible by the tokenprice
+        require(msg.value/tokenPrice <= maxTokens, "Se excede el limite de tokens"); //checking to be within the limist of maxtokens of the voting process
+        tokenManager.mint(msg.sender, msg.value/tokenPrice);
+        
+        uint i =0;
+        while (msg.sender != participants[i].id) i++;
+        participants[i].tokens += msg.value/tokenPrice;  // adding the number of tokens to the participants account
+        maxTokens -= msg.value/tokenPrice; //decreasing the number of maxtokens available after this
+    }
+    
+    function sellTokens(uint256 tokensToSell) validParticipant public payable
+    {
+        uint i =0;
+        while (msg.sender != participants[i].id) i++;
+        //Comprobar si tiene suficientes tokens
+        require(participants[i].tokens >= tokensToSell, "No tiene suficientes tokens"); 
+        //Borrar la cantidad de tokens especificada
+        tokenManager.burn(msg.sender, tokensToSell);
+        //Devolucion de dinero
+        address payable addr = payable(msg.sender);
+        addr.transfer(tokensToSell*tokenPrice);
+         
+    }
+    
+    function getERC20Voting() external view returns(ERC20Token)
+    {
+        return tokenManager;  //return the address of the tokenManager so that the participant could do all the actions from the ERC20 and ERC20Token
+    }
+    
+    function getPendingProposals() public view returns(uint[] memory)
+    {
+        uint[] memory pendingProposals= new uint[](nrProposals);
+        uint t = 0;
+        for(uint i=1; i<nrProposals+1; i++)
+        {
+            if(proposals[i].approved == 0) //if the proposal is pending, adding to the array the id
+            {
+                pendingProposals[t]=proposals[i].id;
+                t++;
+            }
+        }
+        
+        
+        return pendingProposals;
+    }
+    function getApprovedProposals() external view returns(uint[] memory)
+    {
+        uint[] memory approvedProposals= new uint[](nrProposals);
+        uint t = 0;
+        for(uint i=1; i<nrProposals+1; i++)
+        {
+            if(proposals[i].approved == 1) //if the proposal is approved, adding to the array the id
+            {
+                approvedProposals[t]=proposals[i].id;
+                t++;
+            }
+        }
+        
+        return approvedProposals;
+    }
+    
+    function getSignalingProposals() external view returns(uint[] memory)
+    {
+        uint[] memory signalingProposals= new uint[](nrProposals);
+        uint t = 0;
+        for(uint i=1; i<nrProposals+1; i++)
+        {
+            if(proposals[i].signaling == 1) //if the proposal is signaling, adding to the array the id
+            {
+                signalingProposals[t]=proposals[i].id;
+                t++;
+            }
+        }
+        
+        return signalingProposals;
+    }
+    
+    function getProposalInfo(uint idProposal) external view returns(string memory title, string memory description, uint budget, uint votes)
+    {
+       title = proposals[idProposal].title;
+       description = proposals[idProposal].description;
+       budget = proposals[idProposal].budget;
+       votes = proposals[idProposal].votes; 
+    }
+    
+    function stake(uint idProposal, uint nr_votes) public validParticipant
+    {
+        require(votingOpen == true, "La votacion no ha empezado");
+        
+        uint nr_tokens = nr_votes**2; //number of tokens needed is always the number of votes squared
+        if(proposals[idProposal].tokensReceived[msg.sender]>0) //if he already voted in the proposal, checks how many times to compute how much will cost the next vote
+        {
+            uint votes_already = sqrt(proposals[idProposal].tokensReceived[msg.sender]);
+            //get how many times he already voted and how many he wants to cast to get the total number of tokens need for the amount of votes
+            // and then decrease by the amount he already voted.
+            nr_tokens = (votes_already+nr_votes)**2 - sqrt(proposals[idProposal].tokensReceived[msg.sender]);
+        }
+        uint i =0;
+        while (msg.sender != participants[i].id) i++;
+
+        require(participants[i].tokens>=nr_tokens, "No tiene suficientes tokens"); //needs to have enough tokens
+        //before stake the participant should approve through the ERC20 contract the address of QuadraticVoting
+        // so that it would be able to cast the desired votes
+        require(tokenManager.allowance(msg.sender, address(this))>=nr_tokens, "No ha cedido el uso de tokens");
+        tokenManager.transferFrom(msg.sender, address(this), nr_tokens);
+        participants[i].tokens -= nr_tokens;
+        proposals[idProposal].tokensReceived[msg.sender] = nr_tokens;  //addind in the proposals struct, that this address has voted with this amount of tokens
+        proposals[idProposal].votes += nr_votes; //increasing the number of votes
+        proposals[idProposal].ntokens += nr_tokens;
+        _executeProposal(idProposal);  //checking everytime a vote is cast if it is enough for the proposal to be approved and therefore executed
+  
+    }
+    
+    function stakeAllToProposal(uint idProposal) public validParticipant
+    {
+        require(votingOpen == true, "La votacion no ha empezado");
+        uint i =0;
+        while (msg.sender != participants[i].id) i++;
+        require(participants[i].tokens > 0, "No tienes tokens");
+        
+        uint votes_possible = uint(sqrt(participants[i].tokens));  // calculating the number of possible votes which is sqrt of the tokens, and then floor it to have an integer value
+        uint tokens_possible = participants[i].tokens - (votes_possible**2); //to actually see how many tokens the participant will spend
+        require(tokenManager.allowance(msg.sender, address(this))>=tokens_possible, "No ha cedido el uso de tokens");
+        tokenManager.transferFrom(msg.sender, address(this), tokens_possible);
+        proposals[idProposal].tokensReceived[msg.sender]=tokens_possible; //adding to the mapping the amount
+        proposals[idProposal].votes += votes_possible;   
+        participants[i].tokens -= tokens_possible;
+        proposals[idProposal].ntokens += tokens_possible;
+        _executeProposal(idProposal);
+    }
+    
+    function withdrawFromProposal(uint idProposal, uint nr_votes) validParticipant public
+    {
+        uint i =0;
+        while (msg.sender != participants[i].id) i++;
+        //check if he spent tokens in this proposal
+        uint tokens_used = proposals[idProposal].tokensReceived[msg.sender];
+        require(tokens_used>0, "You must have voted in order to withdraw votes");
+        // calculate how many times he voted
+        uint votes_used = sqrt(tokens_used);
+        
+        // check how many votes he wants to withdraw = number of token to give back
+        // if he wants to withdraw less than he spent, giving back the tokens and decreasing the amount of votes on the proposal
+        if(nr_votes<=votes_used)
+        {
+            uint tokens_back = nr_votes**2;
+            proposals[idProposal].votes -= nr_votes;
+            participants[i].tokens+=tokens_back;
+            proposals[idProposal].tokensReceived[msg.sender] -= tokens_back;
+            proposals[idProposal].ntokens -= tokens_back;
+        }
+        else revert("Esta intentando sacar mas votos que los que ha depositado hasta ahora");
+        
+    }
+    
+    function withdrawAllFromProposal(uint idProposal) validParticipant public
+    {
+        uint i =0;
+        while (msg.sender != participants[i].id) i++;
+        uint tokens_used = proposals[idProposal].tokensReceived[msg.sender];
+        require(tokens_used>0, "You must have voted in order to withdraw votes");
+        uint votes_used = sqrt(tokens_used);
+        proposals[idProposal].votes -= votes_used;
+        participants[i].tokens+=tokens_used;
+        proposals[idProposal].tokensReceived[msg.sender] -= tokens_used;
+        proposals[idProposal].ntokens -= tokens_used;
+    }
+    
+    function _executeProposal(uint idProposal) internal 
+    {
+        uint [] memory proposal_nr= getPendingProposals(); //for having the number of proposals not yet approved for the formula
+        
+        if(totalBudget+proposals[idProposal].ntokens*tokenPrice > proposals[idProposal].budget)
+        {
+        
+            //multiplying by 10 everything for not having to deal with 0.2 - rational.const
+            uint threshold = (2+ (proposals[idProposal].budget/totalBudget)*10)*participants.length + proposal_nr.length*10;
+            //so here as well multipluing by 10 to see if the threshold is exceeded
+            if(proposals[idProposal].votes*10>threshold)
+            {
+                for(uint i=0; i<participants.length; i++)
+                {
+                    if(proposals[idProposal].tokensReceived[participants[i].id]>0) //check if the participant voted in this proposal
+                    {
+                        proposals[idProposal].tokensReceived[participants[i].id] = 0; //set the number of tokens to 0 
+                    }
+                }
+                totalBudget -= proposals[idProposal].budget;
+                proposals[idProposal].recipient.executeProposal(idProposal);
+                proposals[idProposal].approved = 1;
+            }
+        }
+
+    }
+    
+    function closeVoting() public payable onlyOwner 
+    {
+        
+        votingOpen = false;
+        for(uint i=1; i<nrProposals+1; i++)
+        {
+            if(proposals[i].approved == 0) //if the proposal is still not approved
+            {
+               for(uint j=0; j<participants.length; j++)
+                {
+                    if(proposals[i].tokensReceived[participants[j].id]>0) //check if the participant voted in this proposal
+                    {
+                        uint  aux = proposals[i].tokensReceived[participants[j].id];
+                        proposals[i].tokensReceived[participants[j].id] = 0; //set the number of tokens to 0 
+                        address payable addr = payable(participants[j].id); //convert the address to payable to be able to do the transfer
+                        addr.transfer(aux*tokenPrice); //send him the value in money of his tokens
+                        delete proposals[i];
+                    }
+                }
+            }
+        }
+        
+        
+        for(uint m = 1; m<nrProposals+1; m++)
+        {
+            if(proposals[m].signaling == 1)
+            {
+                    proposals[m].recipient.executeProposal(m);
+                    for(uint l=0; l<participants.length; l++)
+                    {
+                        if(proposals[m].tokensReceived[participants[l].id]>0) //check if the participant voted in this proposal
+                        {
+                            uint  aux = proposals[m].tokensReceived[participants[l].id];
+                            proposals[m].tokensReceived[participants[l].id] = 0;//set the number of tokens to 0 
+                            address payable addr = payable(participants[l].id);
+                            addr.transfer(aux*tokenPrice);
+                        }
+                    }
+            }
+        }
+        
+        address payable addr2 = payable(owner);
+        addr2.transfer(totalBudget);
+        for(uint k = 0; k<participants.length; k++)
+        {
+            //if the participant still has tokens left
+            if(participants[k].tokens>0)
+            {
+               uint aux2 = participants[k].tokens; //gets how many does he have left
+               participants[k].tokens = 0; 
+               address payable addr3 = payable(participants[k].id);
+               addr3.transfer(aux2*tokenPrice); //giving back to him the price in ether
+            }
+        }
+        
+    }
+    
+    //function for getting the square root 
+    function sqrt(uint x) internal pure returns (uint y) 
+    {
+        uint z = (x + 1) / 2;
+         y = x;
+        while (z < y) 
+        {
+            y = z;
+            z = (x / z + z) / 2;
+        }
+    }
+}
+
