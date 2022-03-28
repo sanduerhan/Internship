@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+import "../openzeppelin-contracts/token/ERC20/ERC20.sol";
+
+contract ERC20Token is ERC20
+{
+    uint256 immutable private _cap; //maximum tokens possible
+    constructor (string memory name_, string memory symbol_, uint256 cap) ERC20(name_, symbol_) 
+    {
+        _cap = cap;
+    }
+    /* Creates amount tokens for the account */
+    function mint(address account, uint256 amount) external  virtual {
+        require(ERC20.totalSupply() + amount <= _cap, "ERC20C: cap exceeded");  //totalSupply of tokens bought already + the new tokens;
+        super._mint(account, amount);
+    }
+    /* Deletes amount tokens from the account */
+     function burn(address sender, uint256 amount) public virtual{
+        super._burn(sender, amount);
+    }
+    
+}

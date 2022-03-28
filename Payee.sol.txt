@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+interface ExecutableProposal 
+{
+    function executeProposal(uint proposalId) external payable;
+}
+
+
+
+
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+import "ExecutableProposal.sol";
+import "QuadraticVoting.sol";
+
+contract Payee is ExecutableProposal
+{
+    
+    event Pay(address sender, uint proposalId, uint value);
+    
+    function executeProposal(uint proposalId) override external payable
+    {
+        emit Pay(msg.sender, proposalId, msg.value);
+    }
+}
